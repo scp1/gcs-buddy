@@ -1,0 +1,7 @@
+.idea
+atlassian-ide-plugin.xml
+*.iml
+*.swp
+*.bak
+*.log
+target
