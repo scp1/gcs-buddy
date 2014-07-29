@@ -36,10 +36,13 @@ import javax.inject.Inject;
 import javax.inject.Named;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.net.SocketTimeoutException;
 import java.nio.charset.Charset;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.zip.GZIPInputStream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -66,6 +69,8 @@ public final class GCSBuddy {
   private static final String UPLOAD_CONTENT_TYPE = "application/octet-stream";
   private static final String ATTACHMENT = "attachment";
 
+  private static final int GZIP_BUFFER_SIZE = 256 * 1024;
+
   // Controls the page size used when iterating over storage objects.
   private static final long DEFAULT_PAGE_SIZE = 200;
 
@@ -89,9 +94,23 @@ public final class GCSBuddy {
     Lists.newArrayList(
       new IsRetryableGoogleException(),
       Predicates.instanceOf(SocketTimeoutException.class),
-      Predicates.instanceOf(NoHttpResponseException.class)
+      Predicates.instanceOf(NoHttpResponseException.class),
+      Predicates.instanceOf(com.google.api.client.http.HttpResponseException.class)
     )
   );
+
+  private static final class IsNotFound implements Predicate<Throwable> {
+
+    @Override
+    public boolean apply(@Nullable Throwable input) {
+      checkNotNull(input);
+
+      return ((GoogleJsonResponseException.class.isInstance(input)) &&
+              (404 == ((GoogleJsonResponseException) input).getDetails().getCode()));
+    }
+  }
+
+  private static final Predicate<Throwable> IS_NOT_FOUND = new IsNotFound();
 
   private static final class NAME_FN implements Function<StorageObject, String> {
     @Nullable
@@ -280,6 +299,27 @@ public final class GCSBuddy {
     );
   }
 
+  private InputStream executeMediaAsInputStreamWithRetry(final Storage.Objects.Get request, final boolean autoDecompress)
+    throws IOException {
+    final RetryStrategy retryStrategy = retryStrategies.get();
+
+    try {
+      while (retryStrategy.shouldRetry()) {
+        try {
+          return maybeWrapInputStream(request.executeMediaAsInputStream(), request, autoDecompress);
+        } catch (Throwable e) {
+          if (!maybeSleep(e, retryStrategy, request)) {
+            throw e;
+          }
+        }
+      }
+    } catch (InterruptedException e) {
+      throw Throwables.propagate(e);
+    }
+
+    throw new RetriesExhaustedException(String.format("retries exhausted using strategy: %s", retryStrategy));
+  }
+
   /**
    * Blocks for some interval specified by {@code retryStrategy} iff the request should be retried (according to the
    * type of exception thrown) and returns false otherwise.
@@ -297,10 +337,11 @@ public final class GCSBuddy {
       return false;
     } else {
       final long interval =  retryStrategy.nextRetryIntervalInMs();
+
       warn(
         "caught {0} while executing {1}; retrying in {2}ms...",
         throwable.getClass().getName(),
-        request.getClass().getName(),
+        request == null ? "" : request.getClass().getName(),
         interval
       );
       warn(throwable);
@@ -310,10 +351,63 @@ public final class GCSBuddy {
   }
 
   /**
+   * Wraps the {@link java.io.InputStream} in a {@link java.util.zip.GZIPInputStream} iff
+   * the GET request was for a gzipped object, and auto decompression is enabled.
+   * @param inputStream The input stream to (maybe) wrap
+   * @param request The current request
+   * @param autoDecompress true if auto decompression is enabled for the request, false otherwise
+   * @return An {@link java.io.InputStream} instance that may or may not wrapped
+   * @throws IOException
+   */
+  private InputStream maybeWrapInputStream(final InputStream inputStream,
+                                           final Storage.Objects.Get request,
+                                           final boolean autoDecompress)
+    throws IOException {
+    if (autoDecompress && request.getObject().endsWith(".gz")) {
+      return new GZIPInputStream(inputStream, GZIP_BUFFER_SIZE);
+    } else {
+      return inputStream;
+    }
+  }
+
+  /**
    * Returns the name of the bucket that {@code this} is configured to use
    */
   public String bucketName() {
     return bucketName;
+  }
+
+  /**
+   * Checks for the existence of an object within the current bucket.
+   *
+   * @param objectName The name of the object to verify
+   * @return true if the object exists, false otherwise. This method only returns false if it receives a strict
+   * "not found" response from GCS. This method will throw other codes as GoogleJsonResponseException
+   * instances (such as a 403 permission error) rather than mis-identifying the specified object as non-existent.
+   * @throws IOException
+   */
+  public boolean exists(String objectName) throws IOException {
+    final String cleanedObjectName = removeLeadingDelimiter(objectName);
+    checkArgument(!Strings.isNullOrEmpty(cleanedObjectName), "objectName cannot be empty or null");
+
+    try {
+      storage.get().objects().get(bucketName, objectName).execute();
+      return true;
+    } catch (GoogleJsonResponseException e) {
+      if (IS_NOT_FOUND.apply(e)) { return false; }
+      throw e;
+    }
+  }
+
+  /**
+   * Determines if the specified object is a directory placeholder
+   * @param storageObject The storage object to check
+   * @return true if storageObject is a directory placeholder, false otherwise
+   */
+  public boolean isDirectory(StorageObject storageObject) {
+    checkNotNull(storageObject, "storageObject");
+
+    return storageObject.getName().endsWith("/") && BigInteger.ZERO.equals(storageObject.getSize());
   }
 
   /**
@@ -343,6 +437,32 @@ public final class GCSBuddy {
   }
 
   /**
+   * Copies a source object to a destination object
+   * @param sourceObjectName the name of the source object, which must already exist
+   * @param destinationObjectName the name of the destination object, which may or may not already exist
+   * @return a {@link com.google.api.services.storage.model.StorageObject} that represents the
+   * destination object that was copied
+   * @throws java.lang.RuntimeException if the source path refers to:
+   *   - an object that does not exist in GCS
+   *   - a prefix that is shared by multiple objects
+   */
+  public StorageObject copy(final String sourceObjectName, final String destinationObjectName) throws IOException {
+
+    try {
+      StorageObject sourceObject = Iterables.getOnlyElement(lsObjects(sourceObjectName));
+
+      Storage.Objects.Copy copy = storage.get()
+        .objects()
+        .copy(bucketName, sourceObjectName, bucketName, destinationObjectName, null);
+
+      return executeWithRetry(copy);
+
+    } catch(IllegalArgumentException | NoSuchElementException e) {
+      throw new RuntimeException("source path ({}) must refer to one and only one object");
+    }
+  }
+
+  /**
    * Uploads the data contained in the supplied {@code byteSource} to the specified object name.
    * @param objectName the name to use for newly-uploade object
    * @param byteSource the source of the bytes that comprise the object
@@ -367,28 +487,48 @@ public final class GCSBuddy {
     checkArgument(!Strings.isNullOrEmpty(removeLeadingDelimiter(objectName)), "objectName cannot be empty");
 
     final String cleanObjName = removeLeadingDelimiter(objectName);
-
-    InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openBufferedStream());
+    final RetryStrategy retryStrategy = retryStrategies.get();
 
     // For small files, you may wish to call setDirectUploadEnabled(true), to
     // reduce the number of HTTP requests made to the server.
     // theStorageObject.getMediaHttpUploader().setDirectUploadEnabled(true);
 
-    Storage.Objects.Insert insert = storage.get().objects()
-      .insert(bucketName,
-              new StorageObject()
-                .setName(cleanObjName)
-                .setContentDisposition(ATTACHMENT),
-              content);
+    try {
+      Storage.Objects.Insert insertRequest = null;
+      while (retryStrategy.shouldRetry()) {
+        try {
 
-    if (reportProgress) {
-      insert.getMediaHttpUploader()
-        .setProgressListener(
-          UploadProgressListener.create(cleanObjName, PROGRESS_INTERVAL_IN_BYTES, byteSource.size())
-        );
+          InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openBufferedStream());
+
+          // TODO: Rather than re-creating the request each time here (since the current request can't always be reused),
+          //       figure out which errors are resumable and resume any in-progress uploads
+          insertRequest = storage.get().objects()
+            .insert(bucketName,
+                    new StorageObject()
+                      .setName(objectName)
+                      .setContentDisposition(ATTACHMENT),
+                    content);
+
+          if (reportProgress) {
+            insertRequest.getMediaHttpUploader()
+              .setProgressListener(
+                UploadProgressListener.create(objectName, 1024L * 1024L, byteSource.size())
+              );
+          }
+
+          insertRequest.execute();
+          return;
+        } catch (Throwable e) {
+          if (!maybeSleep(e, retryStrategy, insertRequest)) {
+            throw e;
+          }
+        }
+      }
+    } catch (InterruptedException e) {
+      throw Throwables.propagate(e);
     }
 
-    executeWithRetry(insert);
+    throw new RetriesExhaustedException(String.format("retries exhausted using strategy: %s", retryStrategy));
   }
 
   /**
@@ -434,12 +574,25 @@ public final class GCSBuddy {
   }
 
   /**
-   * Returns a new {@link com.google.common.io.ByteSource} for reading bytes from the given object.
-   * @param objectName the name of the object from which to read bytes
-   * @return
+   * Reads the binary contents of the object, automatically decompressing gzipped objects
+   * @param objectName the name of the object to read
+   * @return a {@link com.google.common.io.ByteSource} instance to read from
    * @throws IOException
    */
   public ByteSource readBinary(final String objectName) throws IOException {
+    return readBinary(objectName, true);
+  }
+
+  /**
+   * Returns a new {@link com.google.common.io.ByteSource} for reading bytes from the given object.
+   * @param objectName the name of the object from which to read bytes
+   * @param autoDecompress true to automatically decompress gzip files (based on file extension), false to read the "raw"
+   *                       bytes.  The latter can be useful for copying files as-is, rather than decompressing and then
+   *                       re-compressing.
+   * @return a {@link com.google.common.io.ByteSource} instance to read from
+   * @throws IOException
+   */
+  public ByteSource readBinary(final String objectName, final boolean autoDecompress) throws IOException {
     checkArgument(!Strings.isNullOrEmpty(removeLeadingDelimiter(objectName)), "path cannot be empty");
 
     final String cleanObjName = removeLeadingDelimiter(objectName);
@@ -447,7 +600,7 @@ public final class GCSBuddy {
     final Storage.Objects.Get get = storage.get().objects()
       .get(bucketName, cleanObjName);
 
-    final InputStream inputStream = executeAsInputStreamWithRetry(get);
+    final InputStream inputStream = executeMediaAsInputStreamWithRetry(get, autoDecompress);
 
     return new ByteSource() {
       @Override
@@ -465,7 +618,7 @@ public final class GCSBuddy {
    */
   public CharSource read(final String objectName, final Charset charset) throws IOException {
     checkNotNull(charset, "charset");
-    return readBinary(objectName).asCharSource(charset);
+    return readBinary(objectName, true).asCharSource(charset);
   }
 
   /**
