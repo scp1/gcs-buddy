@@ -233,6 +233,8 @@ public final class GCSBuddy {
 
             return advancePage() ? currentObjectsIter.next() : endOfData();
           }
+        // TODO: Yuck. Since AbstractIterator's computeNext method isn't declared as throwing an IOException, we have to
+        // wrap it
         } catch (IOException e) {
           throw Throwables.propagate(e);
         }
