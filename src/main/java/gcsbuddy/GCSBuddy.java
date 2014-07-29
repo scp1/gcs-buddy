@@ -415,7 +415,7 @@ public final class GCSBuddy {
    * @param prefix the prefix to use
    * @return GCS object names that match the supplied prefix, if any.
    */
-  public Iterable<String> ls(final String prefix) {
+  public Iterable<String> list(final String prefix) {
     if (prefix == null) {
       return Lists.newArrayList();
     }
@@ -428,7 +428,7 @@ public final class GCSBuddy {
    * @param prefix the prefix to use
    * @return GCS {@link com.google.api.services.storage.model.StorageObject} instances that match the supplied prefix, if any.
    */
-  public Iterable<StorageObject> lsObjects(final String prefix) {
+  public Iterable<StorageObject> listObjects(final String prefix) {
     if (prefix == null) {
       return Lists.newArrayList();
     }
@@ -449,7 +449,7 @@ public final class GCSBuddy {
   public StorageObject copy(final String sourceObjectName, final String destinationObjectName) throws IOException {
 
     try {
-      StorageObject sourceObject = Iterables.getOnlyElement(lsObjects(sourceObjectName));
+      StorageObject sourceObject = Iterables.getOnlyElement(listObjects(sourceObjectName));
 
       Storage.Objects.Copy copy = storage.get()
         .objects()
@@ -664,7 +664,7 @@ public final class GCSBuddy {
    * @param objectName
    * @throws IOException
    */
-  public void rm(final String objectName) throws IOException {
+  public void delete(final String objectName) throws IOException {
     storage.get()
       .objects()
       .delete(bucketName, objectName)
