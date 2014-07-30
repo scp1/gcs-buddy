@@ -500,7 +500,7 @@ public final class GCSBuddy {
       while (retryStrategy.shouldRetry()) {
         try {
 
-          InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openBufferedStream());
+          InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openStream());
 
           // TODO: Rather than re-creating the request each time here (since the current request can't always be reused),
           //       figure out which errors are resumable and resume any in-progress uploads
@@ -572,7 +572,8 @@ public final class GCSBuddy {
         );
     }
 
-    get.executeMediaAndDownloadTo(byteSink.openBufferedStream());
+    // DO NOT used the ByteSink's buffered stream capability here, as you can't guaranteee it will be flushed.
+    get.executeMediaAndDownloadTo(byteSink.openStream());
   }
 
   /**
@@ -720,8 +721,12 @@ public final class GCSBuddy {
     }
 
     void complete() {
-      stopwatch.stop();
-      info("{0} of {1} completed in {2}", operation, objectName, stopwatch);
+      if (stopwatch.isRunning()) {
+        stopwatch.stop();
+        info("{} of {} completed in {}", operation, objectName, stopwatch);
+      } else {
+        info("{} of {} completed", operation, objectName);
+      }
     }
   }
 

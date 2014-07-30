@@ -20,7 +20,7 @@
     <fest.version>1.4</fest.version>
     <gcs.version>v1-rev2-1.18.0-rc</gcs.version>
     <google.jackson.version>1.18.0-rc</google.jackson.version>
-    <repackage.base>gcebuddy.repackaged</repackage.base>
+    <repackage.base>gcsbuddy.repackaged</repackage.base>
   </properties>
 
   <scm>
