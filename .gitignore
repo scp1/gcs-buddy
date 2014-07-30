@@ -5,3 +5,4 @@ atlassian-ide-plugin.xml
 *.bak
 *.log
 target
+dependency-reduced-pom.xml
