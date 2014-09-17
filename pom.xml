@@ -18,8 +18,8 @@
     <javax.inject.version>1</javax.inject.version>
     <junit.version>4.11</junit.version>
     <fest.version>1.4</fest.version>
-    <gcs.version>v1-rev2-1.18.0-rc</gcs.version>
-    <google.jackson.version>1.18.0-rc</google.jackson.version>
+    <gcs.version>v1-rev9-1.19.0</gcs.version>
+    <google.jackson.version>1.19.0</google.jackson.version>
     <repackage.base>gcsbuddy.repackaged</repackage.base>
   </properties>
 
@@ -165,11 +165,8 @@
           <minimizeJar>false</minimizeJar>
           <shadedArtifactAttached>false</shadedArtifactAttached>
           <createDependencyReducedPom>true</createDependencyReducedPom>
+          <!--
           <relocations>
-            <relocation>
-              <pattern>com.google.common</pattern>
-              <shadedPattern>${repackage.base}.com.google.common</shadedPattern>
-            </relocation>
             <relocation>
               <pattern>com.google.api.client.json.jackson2</pattern>
               <shadedPattern>${repackage.base}.com.google.api.client.json.jackson2</shadedPattern>
@@ -179,6 +176,7 @@
               <shadedPattern>${repackage.base}.com.google.api.client</shadedPattern>
             </relocation>
           </relocations>
+          -->
         </configuration>
 
         <executions>
