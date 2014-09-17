@@ -135,14 +135,6 @@ public final class GCSBuddy {
     }
   }
 
-  private static final class REMOVE_LEADING_DELIMITER_FN implements Function<String, String> {
-    @Nullable
-    @Override
-    public String apply(@Nullable String input) {
-      return removeLeadingDelimiter(input);
-    }
-  }
-
   private static String removeLeadingDelimiter(String prefix) {
     // Object prefixes look just like file paths, except they have no leading '/'
     return Strings.nullToEmpty(prefix).startsWith(PREFIX_DELIMITER) ? prefix.substring(1) : prefix;
