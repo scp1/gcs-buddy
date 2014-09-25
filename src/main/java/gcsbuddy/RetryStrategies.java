@@ -65,7 +65,7 @@ public final class RetryStrategies {
     }
 
     @Override
-    public boolean shouldRetry() {
+    public boolean retriesRemaining() {
       return retriesRemaining > 0;
     }
 
@@ -147,7 +147,7 @@ public final class RetryStrategies {
     }
 
     @Override
-    public boolean shouldRetry() {
+    public boolean retriesRemaining() {
       return retriesRemaining > 0;
     }
 
@@ -200,7 +200,7 @@ public final class RetryStrategies {
     }
 
     @Override
-    public boolean shouldRetry() {
+    public boolean retriesRemaining() {
       return retriesRemaining > 0;
     }
 
@@ -232,7 +232,7 @@ public final class RetryStrategies {
     public static NoRetry get() { return INSTANCE; }
 
     @Override
-    public boolean shouldRetry() {
+    public boolean retriesRemaining() {
       return false;
     }
 

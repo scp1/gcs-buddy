@@ -64,8 +64,8 @@ import static gcsbuddy.Logging.warn;
  */
 public final class GCSBuddy {
 
-  private static final String PREFIX_DELIMITER = "/";
-  private static final CharMatcher IS_DELIMITER = CharMatcher.is('/');
+  private static final String DELIMITER = "/";
+  private static final CharMatcher DELIMITER_MATCHER = CharMatcher.is('/');
 
   // Controls how often upload/download progress is reported when using progress reporters
   private static final Long PROGRESS_INTERVAL_IN_BYTES = 1024L * 1024L;
@@ -109,7 +109,8 @@ public final class GCSBuddy {
   private static final class IsNotFound implements Predicate<Throwable> {
 
     @Override
-    public boolean apply(@Nullable Throwable input) {
+    public boolean apply(Throwable input) {
+      //noinspection ThrowableResultOfMethodCallIgnored
       checkNotNull(input);
 
       return ((GoogleJsonResponseException.class.isInstance(input)) &&
@@ -137,7 +138,7 @@ public final class GCSBuddy {
 
   private static String removeLeadingDelimiter(String prefix) {
     // Object prefixes look just like file paths, except they have no leading '/'
-    return Strings.nullToEmpty(prefix).startsWith(PREFIX_DELIMITER) ? prefix.substring(1) : prefix;
+    return DELIMITER_MATCHER.trimLeadingFrom(Strings.nullToEmpty(prefix));
   }
 
   public static final Ordering<StorageObject> OrderedByVersion = new Ordering<StorageObject>() {
@@ -297,13 +298,15 @@ public final class GCSBuddy {
   private <T> T executeWithRetry(final StorageRequest<T> request) throws IOException {
 
     final RetryStrategy retryStrategy = retryStrategies.get();
+    Throwable cause = null;
 
     try {
-      while(retryStrategy.shouldRetry()) {
+      while(retryStrategy.retriesRemaining()) {
         try {
           return request.execute();
         } catch (Throwable e) {
-          if (!maybeSleep(e, retryStrategy, request)) {
+          cause = e;
+          if (!shouldRetry(e, retryStrategy, request)) {
             throw e;
           }
         }
@@ -313,19 +316,21 @@ public final class GCSBuddy {
     }
 
     throw new RetriesExhaustedException(
-      String.format("retries exhausted for request: %s using strategy: %s", request, retryStrategy)
+      String.format("retries exhausted for request: %s using strategy: %s", request, retryStrategy), cause
     );
   }
 
   private InputStream executeAsInputStreamWithRetry(final StorageRequest<?> request) throws IOException {
     final RetryStrategy retryStrategy = retryStrategies.get();
+	Throwable cause = null;
 
     try {
-      while(retryStrategy.shouldRetry()) {
+      while(retryStrategy.retriesRemaining()) {
         try {
           return request.executeAsInputStream();
         } catch (Throwable e) {
-          if (!maybeSleep(e, retryStrategy, request)) {
+          cause = e;
+          if (!shouldRetry(e, retryStrategy, request)) {
             throw e;
           }
         }
@@ -335,20 +340,22 @@ public final class GCSBuddy {
     }
 
     throw new RetriesExhaustedException(
-      String.format("retries exhausted for request: %s using strategy: %s", request, retryStrategy)
+      String.format("retries exhausted for request: %s using strategy: %s", request, retryStrategy), cause
     );
   }
 
   private InputStream executeMediaAsInputStreamWithRetry(final Storage.Objects.Get request, final boolean autoDecompress)
     throws IOException {
     final RetryStrategy retryStrategy = retryStrategies.get();
+    Throwable cause = null;
 
     try {
-      while (retryStrategy.shouldRetry()) {
+      while (retryStrategy.retriesRemaining()) {
         try {
           return maybeWrapInputStream(request.executeMediaAsInputStream(), request, autoDecompress);
         } catch (Throwable e) {
-          if (!maybeSleep(e, retryStrategy, request)) {
+          cause = e;
+          if (!shouldRetry(e, retryStrategy, request)) {
             throw e;
           }
         }
@@ -357,7 +364,9 @@ public final class GCSBuddy {
       throw Throwables.propagate(e);
     }
 
-    throw new RetriesExhaustedException(String.format("retries exhausted using strategy: %s", retryStrategy));
+    throw new RetriesExhaustedException(
+      String.format("retries exhausted for request: %s using strategy: %s", request, retryStrategy), cause
+    );
   }
 
   /**
@@ -370,9 +379,9 @@ public final class GCSBuddy {
    * should not be retried
    * @throws InterruptedException
    */
-  private boolean maybeSleep(final Throwable throwable,
-                             final RetryStrategy retryStrategy,
-                             final StorageRequest<?> request) throws InterruptedException {
+  private boolean shouldRetry(final Throwable throwable,
+                              final RetryStrategy retryStrategy,
+                              final StorageRequest<?> request) throws InterruptedException {
     if (!SHOULD_RETRY.apply(throwable)) {
       return false;
     } else {
@@ -483,8 +492,7 @@ public final class GCSBuddy {
    */
   public boolean isDirectory(StorageObject storageObject) {
     checkNotNull(storageObject, "storageObject");
-
-    return storageObject.getName().endsWith(PREFIX_DELIMITER) && BigInteger.ZERO.equals(storageObject.getSize());
+    return storageObject.getName().endsWith(DELIMITER) && BigInteger.ZERO.equals(storageObject.getSize());
   }
 
   /**
@@ -523,7 +531,8 @@ public final class GCSBuddy {
   }
 
   /**
-   * Lists the names of the immediate child objects of the specified bucket and prefix, treating the prefix as a "directory".
+   * Lists the names of the immediate child objects of the specified bucket and prefix, treating the prefix as a
+   * "directory".
    *
    * @param bucket the bucket to list
    * @param prefix the prefix to use
@@ -531,27 +540,28 @@ public final class GCSBuddy {
   public Iterable<String> listChildren(final String bucket, final String prefix) {
     verifyBucketAndPrefix(bucket, prefix);
 
+    // for matching purposes, prefixes should match what we get back from the api: no leading delimiter, and a trailing
+    // delimiter (since we're treating 'prefix' as a dir)
     final String base;
-    if ("".equals(prefix)) {
-      base = "/";
-    } else if (!IS_DELIMITER.matches(prefix.charAt(prefix.length() - 1))) {
-      base = prefix + '/';
+    if (DELIMITER_MATCHER.lastIndexIn(prefix) != prefix.length() - 1) {
+      base = DELIMITER_MATCHER.trimLeadingFrom(prefix) + DELIMITER;
     } else {
-      base = prefix;
+      base = DELIMITER_MATCHER.trimLeadingFrom(prefix);
     }
-    final int prefixCount = IS_DELIMITER.countIn(prefix);
 
-    class DelimitersMatch implements Predicate<String> {
+    final int delimiterCount = DELIMITER_MATCHER.countIn(base);
+
+    class DelimiterCountsMatch implements Predicate<String> {
       @Override
-      public boolean apply(@Nullable String s) {
-        int diff = IS_DELIMITER.countIn(s) - prefixCount;
-        return !base.equals(s) && (diff == 0 || (diff == 1 && IS_DELIMITER.matches(s.charAt(s.length() - 1))));
+      public boolean apply(@Nullable String result) {
+        int diff = DELIMITER_MATCHER.countIn(result) - delimiterCount;
+        return !base.equals(result) && (diff == 0 || (diff == 1 && DELIMITER_MATCHER.matches(result.charAt(result.length() - 1))));
       }
     }
 
     return FluentIterable.from(newPagedObjectIterable(bucket, removeLeadingDelimiter(base), false))
       .transform(new NAME_FN())
-      .filter(new DelimitersMatch());
+      .filter(new DelimiterCountsMatch());
   }
 
   /**
@@ -578,19 +588,19 @@ public final class GCSBuddy {
     final String base;
     if ("".equals(prefix)) {
       base = "/";
-    } else if (!IS_DELIMITER.matches(prefix.charAt(prefix.length() - 1))) {
+    } else if (!DELIMITER_MATCHER.matches(prefix.charAt(prefix.length() - 1))) {
       base = prefix + '/';
     } else {
       base = prefix;
     }
-    final int prefixCount = IS_DELIMITER.countIn(base);
+    final int prefixCount = DELIMITER_MATCHER.countIn(base);
 
     class DelimitersMatch implements Predicate<StorageObject> {
       @Override
       public boolean apply(@Nullable StorageObject object) {
         String s = object.getName();
-        int count = IS_DELIMITER.countIn(s) - prefixCount;
-        return !base.equals(s) && (count == 0 || (count == 1 && IS_DELIMITER.matches(s.charAt(s.length() - 1))));
+        int count = DELIMITER_MATCHER.countIn(s) - prefixCount;
+        return !base.equals(s) && (count == 0 || (count == 1 && DELIMITER_MATCHER.matches(s.charAt(s.length() - 1))));
       }
     }
 
@@ -733,14 +743,16 @@ public final class GCSBuddy {
 
     final String cleanObjName = removeLeadingDelimiter(objectName);
     final RetryStrategy retryStrategy = retryStrategies.get();
+    Throwable cause = null;
+    Storage.Objects.Insert insertRequest = null;
+
 
     // For small files, you may wish to call setDirectUploadEnabled(true), to
     // reduce the number of HTTP requests made to the server.
     // theStorageObject.getMediaHttpUploader().setDirectUploadEnabled(true);
 
     try {
-      Storage.Objects.Insert insertRequest = null;
-      while (retryStrategy.shouldRetry()) {
+      while (retryStrategy.retriesRemaining()) {
         try {
 
           InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openStream());
@@ -750,22 +762,23 @@ public final class GCSBuddy {
           insertRequest = storage.get().objects()
             .insert(bucket,
                     new StorageObject()
-                      .setName(objectName)
+                      .setName(cleanObjName)
                       .setContentDisposition(ATTACHMENT),
                     content);
 
           if (reportProgress) {
             insertRequest.getMediaHttpUploader()
               .setProgressListener(
-                UploadProgressListener.create(objectName, 1024L * 1024L, byteSource.size())
+                UploadProgressListener.create(cleanObjName, 1024L * 1024L, byteSource.size())
               );
           }
 
           insertRequest.execute();
-          info("upload to {0}, {1} is complete", bucket, objectName);
+          info("upload to {0}, {1} is complete", bucket, cleanObjName);
           return;
         } catch (Throwable e) {
-          if (!maybeSleep(e, retryStrategy, insertRequest)) {
+          cause = e;
+          if (!shouldRetry(e, retryStrategy, insertRequest)) {
             throw e;
           }
         }
@@ -774,7 +787,9 @@ public final class GCSBuddy {
       throw Throwables.propagate(e);
     }
 
-    throw new RetriesExhaustedException(String.format("retries exhausted using strategy: %s", retryStrategy));
+    throw new RetriesExhaustedException(
+      String.format("retries exhausted for request %s using strategy: %s", insertRequest, retryStrategy), cause
+    );
   }
 
   /**

@@ -1,6 +1,6 @@
 package gcsbuddy;
 
 public interface RetryStrategy {
-  boolean shouldRetry();
+  boolean retriesRemaining();
   long nextRetryIntervalInMs();
 }
