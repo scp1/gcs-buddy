@@ -80,11 +80,21 @@
       <version>${fest.version}</version>
       <scope>test</scope>
     </dependency>
+	<dependency>
+	  <groupId>org.apache.logging.log4j</groupId>
+	  <artifactId>log4j-api</artifactId>
+	  <version>2.1</version>
+	</dependency>
+	<dependency>
+	  <groupId>org.apache.logging.log4j</groupId>
+	  <artifactId>log4j-core</artifactId>
+	  <version>2.1</version>
+	</dependency>
   </dependencies>
 
   <build>
     <plugins>
-      <plugin>
+      <!--plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-clean-plugin</artifactId>
         <version>2.5</version>
@@ -165,7 +175,7 @@
           <minimizeJar>false</minimizeJar>
           <shadedArtifactAttached>false</shadedArtifactAttached>
           <createDependencyReducedPom>true</createDependencyReducedPom>
-          <!--
+          
           <relocations>
             <relocation>
               <pattern>com.google.api.client.json.jackson2</pattern>
@@ -176,7 +186,6 @@
               <shadedPattern>${repackage.base}.com.google.api.client</shadedPattern>
             </relocation>
           </relocations>
-          -->
         </configuration>
 
         <executions>
@@ -199,7 +208,7 @@
             </configuration>
           </execution>
         </executions>
-      </plugin>
+      </plugin-->
     </plugins>
   </build>
 </project>

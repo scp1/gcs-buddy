@@ -1,23 +1,25 @@
 package gcsbuddy;
 
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+
 
 /**
  * Simple wrappers for GCSBuddy's logging calls
  */
 final class Logging {
-  private static Logger LOGGER = Logger.getLogger(GCSBuddy.class.getName());
+  protected static Logger LOGGER = LogManager.getLogger(GCSBuddy.class.getName());
 
   public static void info(String msg, Object...args) {
-    LOGGER.log(Level.INFO, msg, args);
+	LOGGER.info(msg, args);
   }
 
   public static void warn(String msg, Object...args) {
-    LOGGER.log(Level.WARNING, msg, args);
+    LOGGER.warn(msg, args);
   }
 
   public static void warn(Throwable throwable) {
-    LOGGER.log(Level.WARNING, "", throwable);
+    LOGGER.warn("", throwable);
   }
 }

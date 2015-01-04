@@ -26,17 +26,22 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
+import com.google.common.io.BaseEncoding;
 import com.google.common.io.ByteSink;
 import com.google.common.io.ByteSource;
 import com.google.common.io.CharSource;
 import com.google.common.primitives.Longs;
+
 import org.apache.http.NoHttpResponseException;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Provider;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.SocketTimeoutException;
 import java.nio.charset.Charset;
@@ -46,6 +51,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.zip.CheckedInputStream;
 import java.util.zip.GZIPInputStream;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -53,7 +59,6 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static gcsbuddy.Logging.info;
 import static gcsbuddy.Logging.warn;
 
-@SuppressWarnings("UnusedDeclaration")
 /**
  * Provides an easy-to-use wrapper around the Google Cloud Storage (GCS) JSON API client lib, with convenience methods
  * that simplify tasks like:
@@ -103,6 +108,18 @@ public final class GCSBuddy {
       new IsRetryableGoogleException(),
       Predicates.instanceOf(SocketTimeoutException.class),
       Predicates.instanceOf(NoHttpResponseException.class)
+    )
+  );
+  
+  @SuppressWarnings("unchecked")
+  // operations will be retried according to the retry policy when any of the following are caught
+  // during the execution of a request
+  private static Predicate<Object> SHOULD_RETRY_INC_IO = Predicates.or(
+    Lists.newArrayList(
+      new IsRetryableGoogleException(),
+      Predicates.instanceOf(SocketTimeoutException.class),
+      Predicates.instanceOf(NoHttpResponseException.class),
+      Predicates.instanceOf(IOException.class)
     )
   );
 
@@ -223,8 +240,6 @@ public final class GCSBuddy {
     if (!Strings.isNullOrEmpty(prefix)) {
       listRequest.setPrefix(prefix);
     }
-
-    final RetryStrategy retryStrategy = retryStrategies.get();
 
     return new AbstractIterator<StorageObject>() {
 
@@ -397,6 +412,26 @@ public final class GCSBuddy {
       Thread.sleep(interval);
       return true;
     }
+  }
+  
+  private boolean shouldRetryIncIO(final Throwable throwable,
+                              final RetryStrategy retryStrategy,
+		  					  final String requestName) throws InterruptedException {
+	  if (!SHOULD_RETRY_INC_IO.apply(throwable)) {
+	      return false;
+	    } else {
+	      final long interval =  retryStrategy.nextRetryIntervalInMs();
+
+	      warn(
+	        "caught {0} while executing {1}; retrying in {2}ms...",
+	        throwable.getClass().getName(),
+	        requestName,
+	        interval
+	      );
+	      warn(throwable);
+	      Thread.sleep(interval);
+	      return true;
+	    }
   }
 
   /**
@@ -753,9 +788,9 @@ public final class GCSBuddy {
 
     try {
       while (retryStrategy.retriesRemaining()) {
-        try {
+        try (InputStream from = byteSource.openStream()){
 
-          InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, byteSource.openStream());
+          InputStreamContent content = new InputStreamContent(UPLOAD_CONTENT_TYPE, from);
 
           // TODO: Rather than re-creating the request each time here (since the current request can't always be reused),
           //       figure out which errors are resumable and resume any in-progress uploads
@@ -852,7 +887,9 @@ public final class GCSBuddy {
     }
 
     // DO NOT used the ByteSink's buffered stream capability here, as you can't guaranteee it will be flushed.
-    get.executeMediaAndDownloadTo(byteSink.openStream());
+    try (OutputStream to = byteSink.openStream()) {
+    	get.executeMediaAndDownloadTo(to);
+    }
   }
 
   /**
@@ -927,6 +964,71 @@ public final class GCSBuddy {
         return inputStream;
       }
     };
+  }
+  
+  public void verifiedDownload(final String bucket, final String objectName, final File file) throws IOException {
+	  verifiedDownload(bucket, objectName, Optional.<Long>absent(),file);
+  }
+  
+  public void verifiedDownload(final String bucket, final String objectName, final Optional<Long> version, final File file) throws IOException {
+	  verifyObjectSpecification(bucket, objectName);
+	  checkNotNull(file, "file");
+	boolean successfulDownload = false;
+	try {
+		final Storage.Objects.Get get = storage.get().objects()
+				.get(bucket, objectName);
+		if (version.isPresent()) {
+		  get.setGeneration(version.get());
+		}
+		
+		//Retrieve object metadata to verify check sum
+		StorageObject objMetadata = executeWithRetry(get);
+		final RetryStrategy retryStrategy = retryStrategies.get();
+			Throwable cause = null;
+			
+			try {
+			  while(retryStrategy.retriesRemaining()) {
+			    try {
+			    	verifiedDownload(get, file, objMetadata);
+			    	successfulDownload = true;
+			    	return;
+			    } catch (Throwable e) {
+			      cause = e;
+			      if (!shouldRetryIncIO(e, retryStrategy, "verifiedDownload")) {
+			    	  throw e;
+			      }
+			    }
+			  }
+			} catch (InterruptedException e) {
+			  throw Throwables.propagate(e);
+			}
+			
+			throw new RetriesExhaustedException(
+			  String.format("retries exhausted for request: verifiedDownload using strategy: %s", retryStrategy), cause
+			);
+	  } finally {
+		  if (!successfulDownload) {
+			  file.delete();
+		  }
+	  }
+  }
+
+  private void verifiedDownload(final Storage.Objects.Get get, final File file, StorageObject objMetadata) throws IOException {
+	  boolean autoDecompress = false;
+	  boolean crcPassed = false;
+	  try (CheckedInputStream cis = new CheckedInputStream(executeMediaAsInputStreamWithRetry(get, autoDecompress), new Crc32c());
+			  OutputStream out = new FileOutputStream(file, false);) {
+			byte[] buf = new byte[8192];
+			int n;
+			while ((n = cis.read(buf)) > 0) {
+			    out.write(buf, 0, n);
+			}
+			String checkSum = BaseEncoding.base64().encode(((Crc32c) cis.getChecksum()).getValueAsBytes());
+			crcPassed = checkSum.equals(objMetadata.getCrc32c());
+			if (!crcPassed) {
+				throw new IOException(String.format("Checksum %s doesn't match file metadata checksum %s", checkSum, objMetadata.getCrc32c()));
+			}
+	  }
   }
 
   /**
