@@ -403,7 +403,7 @@ public final class GCSBuddy {
       final long interval =  retryStrategy.nextRetryIntervalInMs();
 
       warn(
-        "caught {0} while executing {1}; retrying in {2}ms...",
+        "caught %s while executing %s; retrying in %sms...",
         throwable.getClass().getName(),
         request == null ? "" : request.getClass().getName(),
         interval
@@ -423,7 +423,7 @@ public final class GCSBuddy {
 	      final long interval =  retryStrategy.nextRetryIntervalInMs();
 
 	      warn(
-	        "caught {0} while executing {1}; retrying in {2}ms...",
+	        "caught %s while executing %s; retrying in %sms...",
 	        throwable.getClass().getName(),
 	        requestName,
 	        interval
@@ -809,7 +809,7 @@ public final class GCSBuddy {
           }
 
           insertRequest.execute();
-          info("upload to {0}, {1} is complete", bucket, cleanObjName);
+          info("upload to %s, %s is complete", bucket, cleanObjName);
           return;
         } catch (Throwable e) {
           cause = e;
@@ -1196,7 +1196,7 @@ public final class GCSBuddy {
 
     void started() {
       stopwatch.start();
-      info("{0} of {1} started...", operation, objectName);
+      info("%s of %s started...", operation, objectName);
     }
 
     void progress(long numBytesTransferred) {
@@ -1204,7 +1204,7 @@ public final class GCSBuddy {
       if ((newBytesTransferred - bytesTransferred) >= intervalInBytes) {
         if (totalSizeInBytes.isPresent()) {
           info(
-            "{0} : ({1}%) {2}ed {3}/{4} bytes...",
+            "%s : (%s%) %sed %s/%s bytes...",
             objectName,
             100 * newBytesTransferred / totalSizeInBytes.get(),
             operation,
@@ -1212,7 +1212,7 @@ public final class GCSBuddy {
             formatter.format(totalSizeInBytes.get())
           );
         } else {
-          info("{0} : {1}ed {2} bytes...", objectName, operation, formatter.format(newBytesTransferred));
+          info("%s : %sed %s bytes...", objectName, operation, formatter.format(newBytesTransferred));
         }
       }
       bytesTransferred = newBytesTransferred;
@@ -1221,9 +1221,9 @@ public final class GCSBuddy {
     void complete() {
       if (stopwatch.isRunning()) {
         stopwatch.stop();
-        info("{0} of {1} completed in {2}", operation, objectName, stopwatch);
+        info("%s of %s completed in %s", operation, objectName, stopwatch);
       } else {
-        info("{0} of {1} completed", operation, objectName);
+        info("%s of %s completed", operation, objectName);
       }
     }
   }

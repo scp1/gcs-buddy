@@ -12,14 +12,20 @@ final class Logging {
   protected static Logger LOGGER = LogManager.getLogger(GCSBuddy.class.getName());
 
   public static void info(String msg, Object...args) {
-	LOGGER.info(msg, args);
+	  if (LOGGER.isInfoEnabled()) {
+		  LOGGER.info(String.format(msg, args));
+	  }
   }
 
   public static void warn(String msg, Object...args) {
-    LOGGER.warn(msg, args);
+	  if (LOGGER.isWarnEnabled()) {
+		  LOGGER.warn(String.format(msg, args));
+	  }
   }
 
   public static void warn(Throwable throwable) {
-    LOGGER.warn("", throwable);
+	  if (LOGGER.isWarnEnabled()) {
+		  LOGGER.warn("", throwable);
+	  }
   }
 }
